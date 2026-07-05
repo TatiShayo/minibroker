@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+aiofiles
+aiosqlite
+pytest
+pytest-asyncio
+httpx
