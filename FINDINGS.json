@@ -1,0 +1,7 @@
+{
+  "schema": "hermes.findings.v4",
+  "run_id": "hermes-2026-07-25-minibroker",
+  "project": "minibroker",
+  "phase": "8.0",
+  "findings": []
+}
