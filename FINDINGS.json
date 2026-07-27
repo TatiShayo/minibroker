@@ -3,7 +3,7 @@
   "run_id": "hermes-2026-07-27-v6-minibroker",
   "project": "minibroker",
   "phase": "4.0",
-  "produced_at": "2026-07-27T22:36:43.296081",
+  "produced_at": "2026-07-27T22:37:18.999596",
   "runner_tier": "T1",
   "mode": "static-only",
   "findings": [
