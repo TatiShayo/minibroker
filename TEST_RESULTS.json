@@ -2,7 +2,7 @@
   "schema": "hermes.tests.v6",
   "run_id": "hermes-2026-07-27-v6-minibroker",
   "project": "minibroker",
-  "produced_at": "2026-07-27T22:37:18.999596",
+  "produced_at": "2026-07-27T22:37:53.028554",
   "summary": {
     "status": "UNRUNNABLE_NO_SCRIPT",
     "passed": 0,
