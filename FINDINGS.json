@@ -1,7 +1,46 @@
 {
-  "schema": "hermes.findings.v4",
-  "run_id": "hermes-2026-07-25-minibroker",
+  "schema": "hermes.findings.v6",
+  "run_id": "hermes-2026-07-27-v6-minibroker",
   "project": "minibroker",
-  "phase": "8.0",
-  "findings": []
+  "phase": "4.0",
+  "produced_at": "2026-07-27T22:09:58.837319",
+  "runner_tier": "T1",
+  "mode": "static-only",
+  "findings": [
+    {
+      "id": "F-V6-001",
+      "title": "Missing 'test' Script in package.json",
+      "severity": "medium",
+      "confidence_tier": "E2-P",
+      "actionability": "P2",
+      "fix_class": "config",
+      "confidence": 0.99,
+      "category": "correctness",
+      "cwe": "CWE-1025",
+      "locations": [
+        {
+          "file": "package.json",
+          "line": 5,
+          "symbol": "scripts"
+        }
+      ],
+      "impact": "Automated test harness cannot invoke test suite via npm test.",
+      "recommended_fix": "Add 'test': 'vitest run' to package.json scripts.",
+      "falsification": {
+        "status": "survived",
+        "by": "falsifier_agent#1",
+        "note": "Verified missing script in package.json."
+      },
+      "blast_radius": {
+        "reachable_from_internet": false,
+        "requires_auth": false,
+        "data_classes": []
+      },
+      "acceptance": {
+        "previously_accepted": false,
+        "context_hash": null,
+        "accepted_reason": null
+      }
+    }
+  ]
 }

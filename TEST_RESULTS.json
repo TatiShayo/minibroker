@@ -1,9 +1,21 @@
 {
-  "schema": "hermes.tests.v4",
-  "run_id": "hermes-2026-07-25-minibroker",
-  "status": "pass",
-  "counts": {
-    "passed": 16,
-    "failed": 0
-  }
+  "schema": "hermes.tests.v6",
+  "run_id": "hermes-2026-07-27-v6-minibroker",
+  "project": "minibroker",
+  "produced_at": "2026-07-27T22:09:58.837319",
+  "summary": {
+    "status": "UNRUNNABLE_NO_SCRIPT",
+    "passed": 0,
+    "failed": 1,
+    "skipped": 0,
+    "unrunnable": 1
+  },
+  "suites": [
+    {
+      "suite": "TypeScript Compilation",
+      "tool": "npx tsc --noEmit",
+      "status": "FAIL",
+      "exit_code": 1
+    }
+  ]
 }
