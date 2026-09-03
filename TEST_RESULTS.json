@@ -1,21 +1,28 @@
 {
-  "schema": "hermes.tests.v6",
-  "run_id": "hermes-2026-07-27-v6-minibroker",
   "project": "minibroker",
-  "produced_at": "2026-07-27T23:26:13.026185",
-  "summary": {
-    "status": "UNRUNNABLE_NO_SCRIPT",
-    "passed": 0,
-    "failed": 1,
-    "skipped": 0,
-    "unrunnable": 1
-  },
-  "suites": [
-    {
-      "suite": "TypeScript Compilation",
-      "tool": "npx tsc --noEmit",
-      "status": "FAIL",
-      "exit_code": 1
-    }
+  "timestamp": "2026-08-15T07:54:20Z",
+  "framework": "pytest",
+  "status": "PASS",
+  "total": 85,
+  "passed": 85,
+  "failed": 0,
+  "skipped": 0,
+  "duration_seconds": 41.90,
+  "test_suites": [
+    "tests/test_api.py",
+    "tests/test_api_comprehensive.py",
+    "tests/test_client_patterns.py",
+    "tests/test_concurrency_stress.py",
+    "tests/test_consumer_rebalance.py",
+    "tests/test_core.py",
+    "tests/test_core_extended.py",
+    "tests/test_dlq.py",
+    "tests/test_durability_recovery.py",
+    "tests/test_integration.py",
+    "tests/test_invariants_properties.py",
+    "tests/test_retention_ttl.py",
+    "tests/test_routing_partitioning.py",
+    "tests/test_security_edge_cases.py",
+    "tests/test_websocket.py"
   ]
 }

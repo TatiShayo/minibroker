@@ -4,17 +4,22 @@ import shutil
 import pytest
 import os
 import asyncio
+from contextlib import asynccontextmanager
+from httpx import AsyncClient, ASGITransport
 
 # Create temporary directory for isolated test execution
 temp_data_dir = tempfile.mkdtemp()
 
-# Modify config before any modules import it
+# Modify config before modules import it
 import config
 config.DATA_DIR = temp_data_dir
+config.SYNC_WRITES = False
 
-# Override the database path in core.offsets
+# Override database path in core.offsets
 import core.offsets
 core.offsets.DB_PATH = os.path.join(temp_data_dir, "offsets.db")
+
+from main import app
 
 @pytest.fixture(scope="session", autouse=True)
 def cleanup_temp_dir():
@@ -38,12 +43,17 @@ def clean_temp_data():
             pass
     yield
 
-# Configure pytest-asyncio event loop
-@pytest.fixture(scope="session")
-def event_loop():
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+@pytest.fixture
+async def client():
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
+            yield ac
+
+@pytest.fixture
+def client_factory():
+    @asynccontextmanager
+    async def _factory():
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
+                yield ac
+    return _factory

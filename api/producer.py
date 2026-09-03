@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request, HTTPException
 from models.schemas import MessageProduce, MessageProduceResponse, BatchProduceRequest, BatchProduceResponse
+from core.metrics import metrics
 
 router = APIRouter()
 
@@ -11,19 +12,26 @@ async def produce_message(request: Request, topic: str, payload: MessageProduce)
         
     topic_obj = topics[topic]
     
-    # Route message to a partition based on key or round-robin
-    part_idx = topic_obj.partition(payload.key)
-    partition_obj = topic_obj.get_partition(part_idx)
-    
-    if not partition_obj:
-        raise HTTPException(status_code=500, detail="Partition not found inside topic")
+    # Determine target partition: explicit or routed via key
+    if payload.partition is not None:
+        part_idx = payload.partition
+        if part_idx not in topic_obj.partitions:
+            raise HTTPException(status_code=400, detail=f"Partition {part_idx} does not exist in topic {topic}")
+    else:
+        part_idx = topic_obj.partition(payload.key)
         
-    # Append message
+    partition_obj = topic_obj.get_partition(part_idx)
+    if not partition_obj:
+        raise HTTPException(status_code=500, detail=f"Partition {part_idx} not found inside topic")
+        
     result = await partition_obj.append(
         key=payload.key,
         value=payload.value,
-        headers=payload.headers
+        headers=payload.headers,
+        timestamp=payload.timestamp
     )
+    
+    metrics.record_produced(topic, count=1)
     
     return MessageProduceResponse(
         topic=topic,
@@ -34,37 +42,41 @@ async def produce_message(request: Request, topic: str, payload: MessageProduce)
 
 @router.post("/topics/{topic}/messages/batch", response_model=BatchProduceResponse)
 async def produce_message_batch(request: Request, topic: str, payload: BatchProduceRequest):
-    if len(payload.messages) > 1000:
-        raise HTTPException(status_code=400, detail="Batch size exceeds maximum limit of 1000 messages")
+    if len(payload.messages) > 5000:
+        raise HTTPException(status_code=400, detail="Batch size exceeds maximum limit of 5000 messages")
         
     topics = request.app.state.topics
     if topic not in topics:
         raise HTTPException(status_code=404, detail="Topic not found")
         
     topic_obj = topics[topic]
-    results = []
+    batch_dicts = [
+        {
+            "key": m.key,
+            "value": m.value,
+            "headers": m.headers,
+            "partition": m.partition,
+            "timestamp": m.timestamp
+        }
+        for m in payload.messages
+    ]
     
-    for msg in payload.messages:
-        part_idx = topic_obj.partition(msg.key)
-        partition_obj = topic_obj.get_partition(part_idx)
-        if not partition_obj:
-            raise HTTPException(status_code=500, detail=f"Partition {part_idx} not found")
-            
-        result = await partition_obj.append(
-            key=msg.key,
-            value=msg.value,
-            headers=msg.headers
-        )
-        results.append(
-            MessageProduceResponse(
-                topic=topic,
-                partition=part_idx,
-                offset=result["offset"],
-                timestamp=result["timestamp"]
-            )
-        )
+    try:
+        results = await topic_obj.produce_batch(batch_dicts)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
         
+    metrics.record_produced(topic, count=len(results))
+    
     return BatchProduceResponse(
         topic=topic,
-        results=results
+        results=[
+            MessageProduceResponse(
+                topic=r["topic"],
+                partition=r["partition"],
+                offset=r["offset"],
+                timestamp=r["timestamp"]
+            )
+            for r in results
+        ]
     )

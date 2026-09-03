@@ -5,10 +5,69 @@ import json
 import time
 import asyncio
 import aiofiles
+from typing import Any, Dict, List, Optional
 from core.index import OffsetIndex
-from config import INDEX_INTERVAL
+from core.filter import matches_filter
+from config import INDEX_INTERVAL, SYNC_WRITES
+
+HEADER_FORMAT = "<IIIIQQ"
+HEADER_SIZE = 32
+
+def _encode_message(key: Any, value: Any, headers: Optional[Dict[str, Any]], timestamp: int, offset: int) -> tuple[bytes, dict]:
+    """Encode a message record into binary format [crc(4)|key_len(4)|val_len(4)|hdrs_len(4)|timestamp(8)|offset(8)|payload]."""
+    # Key
+    if isinstance(key, str):
+        key_bytes = key.encode('utf-8')
+        key_str = key
+    elif isinstance(key, bytes):
+        key_bytes = key
+        try:
+            key_str = key.decode('utf-8')
+        except UnicodeDecodeError:
+            key_str = key.hex()
+    elif key is not None:
+        key_str = str(key)
+        key_bytes = key_str.encode('utf-8')
+    else:
+        key_bytes = b""
+        key_str = None
+
+    # Value
+    if isinstance(value, bytes):
+        val_bytes = value
+    elif isinstance(value, str):
+        val_bytes = value.encode('utf-8')
+    elif value is not None:
+        val_bytes = json.dumps(value).encode('utf-8')
+    else:
+        val_bytes = b""
+
+    # Headers
+    headers_dict = headers if isinstance(headers, dict) else {}
+    hdrs_bytes = json.dumps(headers_dict).encode('utf-8') if headers_dict else b"{}"
+
+    key_len = len(key_bytes)
+    val_len = len(val_bytes)
+    hdrs_len = len(hdrs_bytes)
+
+    payload = key_bytes + val_bytes + hdrs_bytes
+    crc = zlib.crc32(payload) & 0xffffffff
+
+    header_bytes = struct.pack(HEADER_FORMAT, crc, key_len, val_len, hdrs_len, timestamp, offset)
+    record_bytes = header_bytes + payload
+
+    record_meta = {
+        "offset": offset,
+        "timestamp": timestamp,
+        "key": key_str,
+        "value": value,
+        "headers": headers_dict
+    }
+    return record_bytes, record_meta
 
 class Segment:
+    """Represents an individual append-only log segment file with binary record serialization."""
+    
     def __init__(self, path: str, base_offset: int, max_size: int = 1_048_576):
         self.path = path
         self.base_offset = base_offset
@@ -17,14 +76,12 @@ class Segment:
         self.next_offset = base_offset
 
     async def recover(self):
-        """Scan the segment file to populate the index and determine the next offset."""
+        """Scan the segment file to populate the index, verify CRC integrity, and determine next offset."""
         self.index.clear()
         if not os.path.exists(self.path):
             self.next_offset = self.base_offset
             return
 
-        HEADER_FORMAT = "<IIIIQQ"
-        HEADER_SIZE = 32
         last_offset = self.base_offset - 1
         last_valid_position = 0
 
@@ -32,7 +89,7 @@ class Segment:
             file_size = os.path.getsize(self.path)
             async with aiofiles.open(self.path, "rb") as f:
                 position = 0
-                while True:
+                while position + HEADER_SIZE <= file_size:
                     await f.seek(position)
                     header_bytes = await f.read(HEADER_SIZE)
                     if len(header_bytes) < HEADER_SIZE:
@@ -46,7 +103,6 @@ class Segment:
                         break
                     
                     payload_size = key_len + val_len + hdrs_len
-                    # Validate that the unpacked payload_size is less than self.max_size and fits within remaining file size
                     if payload_size >= self.max_size or position + HEADER_SIZE + payload_size > file_size:
                         break
                     
@@ -54,7 +110,6 @@ class Segment:
                     if len(payload_bytes) < payload_size:
                         break
                     
-                    # Verify the CRC matches
                     actual_crc = zlib.crc32(payload_bytes) & 0xffffffff
                     if actual_crc != crc:
                         break
@@ -68,7 +123,7 @@ class Segment:
         except Exception:
             pass
 
-        # Truncate the file to last valid position to discard any corrupt or partial records
+        # Truncate any corrupt or partial tail
         try:
             if os.path.exists(self.path):
                 if os.path.getsize(self.path) > last_valid_position:
@@ -80,109 +135,115 @@ class Segment:
         self.next_offset = last_offset + 1
 
     def get_size(self) -> int:
-        """Get the current size of the segment file on disk."""
+        """Get the current physical size of the segment file on disk."""
         if os.path.exists(self.path):
             return os.path.getsize(self.path)
         return 0
 
     def is_active(self) -> bool:
-        """Check if the segment can still be appended to (size < max_size)."""
+        """Check if the segment can accept new writes."""
         return self.get_size() < self.max_size
 
-    async def append(self, key, value, headers, timestamp=None) -> dict:
-        """
-        Append a message to the segment file.
-        Format: [crc32(4B) | key_len(4B) | value_len(4B) | headers_len(4B) | timestamp(8B) | offset(8B) | key | value | headers_json]
-        """
+    async def append(self, key: Any, value: Any, headers: Optional[Dict[str, Any]], timestamp: Optional[int] = None) -> dict:
+        """Append a single message to the segment file."""
         if timestamp is None:
             timestamp = int(time.time() * 1000)
 
-        # Encode key
-        if isinstance(key, str):
-            key_bytes = key.encode('utf-8')
-        elif isinstance(key, bytes):
-            key_bytes = key
-        else:
-            key_bytes = b""
-
-        # Encode value
-        if isinstance(value, bytes):
-            val_bytes = value
-        elif isinstance(value, str):
-            val_bytes = value.encode('utf-8')
-        elif value is not None:
-            val_bytes = json.dumps(value).encode('utf-8')
-        else:
-            val_bytes = b""
-
-        # Encode headers
-        headers_dict = headers if headers is not None else {}
-        hdrs_bytes = json.dumps(headers_dict).encode('utf-8')
-
-        key_len = len(key_bytes)
-        val_len = len(val_bytes)
-        hdrs_len = len(hdrs_bytes)
-
-        payload = key_bytes + val_bytes + hdrs_bytes
-        crc = zlib.crc32(payload) & 0xffffffff
-
         offset = self.next_offset
-        HEADER_FORMAT = "<IIIIQQ"
-        header_bytes = struct.pack(HEADER_FORMAT, crc, key_len, val_len, hdrs_len, timestamp, offset)
-        record_bytes = header_bytes + payload
-
-        # Ensure directory structure exists
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-
+        record_bytes, record_meta = _encode_message(key, value, headers, timestamp, offset)
+        
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         position = self.get_size()
 
-        # Write record
         async with aiofiles.open(self.path, "ab") as f:
             await f.write(record_bytes)
             await f.flush()
-            
-            # Non-blocking fsync
-            try:
-                fd = f.fileno()
-                if asyncio.iscoroutine(fd):
-                    fd = await fd
-                await asyncio.to_thread(os.fsync, fd)
-            except Exception:
-                # Fallback if fileno or fsync is not supported in the current context
-                pass
+            if SYNC_WRITES:
+                try:
+                    fd = f.fileno()
+                    if asyncio.iscoroutine(fd):
+                        fd = await fd
+                    await asyncio.to_thread(os.fsync, fd)
+                except Exception:
+                    pass
 
-        # Update sparse index
         if offset % self.index.interval == 0:
             self.index.add(offset, position)
 
         self.next_offset += 1
+        return record_meta
 
-        # Re-convert values to their original types for returning
-        return {
-            "offset": offset,
-            "timestamp": timestamp,
-            "key": key if isinstance(key, str) else (key.decode('utf-8') if isinstance(key, bytes) else None),
-            "value": value,
-            "headers": headers_dict
-        }
+    async def append_batch(self, messages: List[dict]) -> List[dict]:
+        """
+        High-throughput batch append: encodes all messages and writes them in a single I/O operation.
+        """
+        if not messages:
+            return []
 
-    async def read(self, start_offset: int, count: int = 1) -> list:
-        """Read up to `count` messages starting from `start_offset` using the sparse index."""
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        current_pos = self.get_size()
+        
+        all_bytes = bytearray()
+        results = []
+        new_index_entries = []
+
+        for msg in messages:
+            offset = self.next_offset
+            ts = msg.get("timestamp") or int(time.time() * 1000)
+            key = msg.get("key")
+            val = msg.get("value")
+            hdrs = msg.get("headers")
+
+            record_bytes, record_meta = _encode_message(key, val, hdrs, ts, offset)
+            
+            if offset % self.index.interval == 0:
+                new_index_entries.append((offset, current_pos + len(all_bytes)))
+
+            all_bytes.extend(record_bytes)
+            results.append(record_meta)
+            self.next_offset += 1
+
+        async with aiofiles.open(self.path, "ab") as f:
+            await f.write(all_bytes)
+            await f.flush()
+            if SYNC_WRITES:
+                try:
+                    fd = f.fileno()
+                    if asyncio.iscoroutine(fd):
+                        fd = await fd
+                    await asyncio.to_thread(os.fsync, fd)
+                except Exception:
+                    pass
+
+        for off, pos in new_index_entries:
+            self.index.add(off, pos)
+
+        return results
+
+    async def read(
+        self,
+        start_offset: int,
+        count: int = 1,
+        key_filter: Optional[str] = None,
+        header_filter: Optional[Dict[str, Any]] = None,
+        drop_expired: bool = False
+    ) -> list:
+        """Read up to `count` messages starting from `start_offset` using sparse index and filtering."""
         if count < 0:
             raise ValueError("Limit cannot be negative")
             
         records = []
-        if not os.path.exists(self.path):
+        if not os.path.exists(self.path) or count == 0:
             return records
 
         position = self.index.find(start_offset)
-        HEADER_FORMAT = "<IIIIQQ"
-        HEADER_SIZE = 32
+        now_ms = int(time.time() * 1000)
 
         try:
+            file_size = os.path.getsize(self.path)
             async with aiofiles.open(self.path, "rb") as f:
                 await f.seek(position)
-                while len(records) < count:
+                while len(records) < count and position + HEADER_SIZE <= file_size:
                     header_bytes = await f.read(HEADER_SIZE)
                     if len(header_bytes) < HEADER_SIZE:
                         break
@@ -206,6 +267,8 @@ class Segment:
                     if actual_crc != crc:
                         raise ValueError(f"CRC mismatch: record is corrupt. Expected {crc}, got {actual_crc}")
                     
+                    position += HEADER_SIZE + payload_size
+
                     if offset >= start_offset:
                         key = payload_bytes[:key_len]
                         val_bytes = payload_bytes[key_len:key_len + val_len]
@@ -220,12 +283,12 @@ class Segment:
                         if val_len > 0:
                             try:
                                 val_str = val_bytes.decode('utf-8')
+                                try:
+                                    value = json.loads(val_str)
+                                except json.JSONDecodeError:
+                                    value = val_str
                             except UnicodeDecodeError:
-                                val_str = val_bytes.hex()
-                            try:
-                                value = json.loads(val_str)
-                            except json.JSONDecodeError:
-                                value = val_str
+                                value = val_bytes.hex()
                         
                         headers = {}
                         if hdrs_len > 0:
@@ -233,18 +296,18 @@ class Segment:
                                 hdrs_str = hdrs_bytes.decode('utf-8')
                                 headers = json.loads(hdrs_str)
                             except Exception:
-                                try:
-                                    headers = {"raw_headers_hex": hdrs_bytes.hex()}
-                                except Exception:
-                                    headers = {}
+                                headers = {}
 
-                        records.append({
+                        record_dict = {
                             "offset": offset,
                             "timestamp": timestamp,
                             "key": key_str,
                             "value": value,
                             "headers": headers
-                        })
+                        }
+
+                        if matches_filter(record_dict, key_filter=key_filter, header_filter=header_filter, drop_expired=drop_expired, current_time_ms=now_ms):
+                            records.append(record_dict)
         except FileNotFoundError:
             return records
             
@@ -255,12 +318,11 @@ class Segment:
         if not os.path.exists(self.path):
             return
 
-        HEADER_FORMAT = "<IIIIQQ"
-        HEADER_SIZE = 32
-
         try:
+            file_size = os.path.getsize(self.path)
             async with aiofiles.open(self.path, "rb") as f:
-                while True:
+                position = 0
+                while position + HEADER_SIZE <= file_size:
                     header_bytes = await f.read(HEADER_SIZE)
                     if len(header_bytes) < HEADER_SIZE:
                         break
@@ -284,6 +346,8 @@ class Segment:
                     if actual_crc != crc:
                         raise ValueError(f"CRC mismatch: record is corrupt. Expected {crc}, got {actual_crc}")
                     
+                    position += HEADER_SIZE + payload_size
+
                     key = payload_bytes[:key_len]
                     val_bytes = payload_bytes[key_len:key_len + val_len]
                     hdrs_bytes = payload_bytes[key_len + val_len:]
@@ -297,12 +361,12 @@ class Segment:
                     if val_len > 0:
                         try:
                             val_str = val_bytes.decode('utf-8')
+                            try:
+                                value = json.loads(val_str)
+                            except json.JSONDecodeError:
+                                value = val_str
                         except UnicodeDecodeError:
-                            val_str = val_bytes.hex()
-                        try:
-                            value = json.loads(val_str)
-                        except json.JSONDecodeError:
-                            value = val_str
+                            value = val_bytes.hex()
                     
                     headers = {}
                     if hdrs_len > 0:
@@ -310,10 +374,7 @@ class Segment:
                             hdrs_str = hdrs_bytes.decode('utf-8')
                             headers = json.loads(hdrs_str)
                         except Exception:
-                            try:
-                                headers = {"raw_headers_hex": hdrs_bytes.hex()}
-                            except Exception:
-                                headers = {}
+                            headers = {}
 
                     yield {
                         "offset": offset,
@@ -326,5 +387,5 @@ class Segment:
             return
 
     async def close(self):
-        """Flush and close any operations (no-op since we use context managers)."""
+        """Flush and release any held resources."""
         pass
