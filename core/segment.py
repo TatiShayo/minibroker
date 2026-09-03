@@ -8,7 +8,7 @@ import aiofiles
 from typing import Any, Dict, List, Optional
 from core.index import OffsetIndex
 from core.filter import matches_filter
-from config import INDEX_INTERVAL, SYNC_WRITES
+from config import INDEX_INTERVAL, SYNC_WRITES, FSYNC_MODE
 
 HEADER_FORMAT = "<IIIIQQ"
 HEADER_SIZE = 32
@@ -158,7 +158,7 @@ class Segment:
         async with aiofiles.open(self.path, "ab") as f:
             await f.write(record_bytes)
             await f.flush()
-            if SYNC_WRITES:
+            if SYNC_WRITES or FSYNC_MODE == "always":
                 try:
                     fd = f.fileno()
                     if asyncio.iscoroutine(fd):
@@ -206,7 +206,7 @@ class Segment:
         async with aiofiles.open(self.path, "ab") as f:
             await f.write(all_bytes)
             await f.flush()
-            if SYNC_WRITES:
+            if SYNC_WRITES or FSYNC_MODE in ("always", "batch"):
                 try:
                     fd = f.fileno()
                     if asyncio.iscoroutine(fd):

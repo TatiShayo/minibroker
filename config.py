@@ -19,8 +19,9 @@ DLQ_TOPIC_SUFFIX = os.environ.get("MINIBROKER_DLQ_TOPIC_SUFFIX", ".DLQ")
 CONSUMER_HEARTBEAT_TIMEOUT_SECONDS = float(os.environ.get("MINIBROKER_CONSUMER_HEARTBEAT_TIMEOUT", 30.0))
 REBALANCE_STRATEGY = os.environ.get("MINIBROKER_REBALANCE_STRATEGY", "range")  # "range", "round_robin", "sticky"
 
-# I/O Durability
+# I/O Durability & Fsync Policy
 SYNC_WRITES = os.environ.get("MINIBROKER_SYNC_WRITES", "false").lower() in ("true", "1", "yes")
+FSYNC_MODE = os.environ.get("MINIBROKER_FSYNC_MODE", "always" if SYNC_WRITES else "batch").lower()  # "always", "batch", "none"
 
 # Server settings
 HOST = os.environ.get("MINIBROKER_HOST", "0.0.0.0")
