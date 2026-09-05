@@ -1,4 +1,3 @@
-
 //! minibroker_lib — append-only commit log storage engine
 //! Zero external dependencies; CRC32 (IEEE) implemented inline.
 
@@ -41,14 +40,14 @@ pub fn crc32(data: &[u8]) -> u32 {
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRecord {
     pub offset: u64,
     pub crc32:  u32,
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsyncPolicy {
     Always,
     Batch(usize),
@@ -73,6 +72,8 @@ impl std::fmt::Display for BrokerError {
     }
 }
 
+impl std::error::Error for BrokerError {}
+
 impl From<std::io::Error> for BrokerError {
     fn from(e: std::io::Error) -> Self { BrokerError::Io(e) }
 }
@@ -96,18 +97,70 @@ pub struct Segment {
 
 impl Segment {
     pub fn create(path: &Path, policy: FsyncPolicy) -> Result<Self, BrokerError> {
-        let file = OpenOptions::new().create(true).write(true).read(true).open(path)?;
-        let reader = OpenOptions::new().read(true).open(path)?;
+        Self::open_or_create(path, policy)
+    }
+
+    pub fn open_or_create(path: &Path, policy: FsyncPolicy) -> Result<Self, BrokerError> {
+        let mut reader = OpenOptions::new().read(true).write(true).create(true).open(path)?;
+        let file_len = reader.metadata()?.len();
+
+        let mut index = Vec::new();
+        let mut record_count = 0u64;
+        let mut byte_size = 0u64;
+
+        if file_len > 0 {
+            reader.seek(SeekFrom::Start(0))?;
+            let mut pos = 0u64;
+            while pos + HEADER_SIZE <= file_len {
+                let mut header = [0u8; 16];
+                reader.read_exact(&mut header)?;
+                let stored_offset = u64::from_be_bytes(header[0..8].try_into().unwrap());
+                let length = u32::from_be_bytes(header[8..12].try_into().unwrap()) as usize;
+                let stored_crc = u32::from_be_bytes(header[12..16].try_into().unwrap());
+
+                if pos + HEADER_SIZE + length as u64 > file_len {
+                    break;
+                }
+
+                let mut payload = vec![0u8; length];
+                reader.read_exact(&mut payload)?;
+                let actual_crc = crc32(&payload);
+                if actual_crc != stored_crc {
+                    return Err(BrokerError::Corruption {
+                        offset: stored_offset,
+                        expected: stored_crc,
+                        got: actual_crc,
+                    });
+                }
+
+                index.push((stored_offset, pos));
+                pos += HEADER_SIZE + length as u64;
+                record_count += 1;
+            }
+            byte_size = pos;
+        }
+
+        let mut writer_file = OpenOptions::new().write(true).create(true).open(path)?;
+        writer_file.seek(SeekFrom::Start(byte_size))?;
+
         Ok(Segment {
             path: path.to_path_buf(),
-            writer: BufWriter::with_capacity(64 * 1024, file),
+            writer: BufWriter::with_capacity(64 * 1024, writer_file),
             reader,
             policy,
-            record_count: 0,
-            byte_size: 0,
+            record_count,
+            byte_size,
             batch_count: 0,
-            index: Vec::new(),
+            index,
         })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn policy(&self) -> FsyncPolicy {
+        self.policy
     }
 
     fn flush_and_sync(&mut self) -> Result<(), BrokerError> {
@@ -148,7 +201,6 @@ impl Segment {
         for &p in payloads {
             offsets.push(self.append(p)?);
         }
-        // Always sync at end of batch
         self.flush_and_sync()?;
         Ok(offsets)
     }
@@ -159,7 +211,6 @@ impl Segment {
             .map(|&(_, pos)| pos)
             .ok_or(BrokerError::OffsetNotFound(offset))?;
 
-        // Flush writer so reader sees latest data
         self.writer.flush()?;
         self.reader.seek(SeekFrom::Start(file_pos))?;
 
@@ -199,8 +250,16 @@ impl CommitLog {
     pub fn new(dir: &Path, policy: FsyncPolicy) -> Result<Self, BrokerError> {
         std::fs::create_dir_all(dir)?;
         let seg_path = dir.join("segment-000.log");
-        let segment = Segment::create(&seg_path, policy)?;
+        let segment = Segment::open_or_create(&seg_path, policy)?;
         Ok(CommitLog { dir: dir.to_path_buf(), policy, segment })
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn policy(&self) -> FsyncPolicy {
+        self.policy
     }
 
     pub fn publish(&mut self, payload: &[u8]) -> Result<u64, BrokerError> {
@@ -219,24 +278,21 @@ impl CommitLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use tempfile::TempDir;
 
     fn temp_segment(policy: FsyncPolicy) -> (Segment, TempDir) {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.log");
-        (Segment::create(&path, policy).unwrap(), dir)
+        (Segment::open_or_create(&path, policy).unwrap(), dir)
     }
 
     #[test]
     fn test_crc32_known_value() {
-        // CRC32("hello") = 0x3610a686
         assert_eq!(crc32(b"hello"), 0x3610a686);
     }
 
     #[test]
     fn test_crc32_empty() {
-        // CRC32 of empty slice should not panic and be deterministic
         let c1 = crc32(b"");
         let c2 = crc32(b"");
         assert_eq!(c1, c2);
@@ -296,21 +352,37 @@ mod tests {
     #[test]
     fn test_crc32_corruption_detected() {
         let (mut seg, _dir) = temp_segment(FsyncPolicy::Always);
-        seg.append(b"sensitive data").unwrap();
-
-        // Corrupt the payload bytes on disk (offset 16 = after header)
-        let path = seg.path.clone();
+        seg.append(b"sensitive financial payload").unwrap();
+        let path = seg.path().to_path_buf();
         drop(seg);
-        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        f.seek(std::io::SeekFrom::Start(16)).unwrap();
-        f.write_all(b"corrupted!!!!").unwrap();
 
-        let mut seg2 = Segment::create(&path, FsyncPolicy::Always).unwrap();
-        // Rebuild index manually since we recreated segment
-        // Just verify reading without index would fail gracefully
-        // (index is empty after recreate - OffsetNotFound)
-        let result = seg2.read(0);
-        assert!(result.is_err());
+        // Corrupt byte at file position 16 (first byte of payload)
+        let mut f = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        f.seek(SeekFrom::Start(16)).unwrap();
+        f.write_all(b"X").unwrap();
+        drop(f);
+
+        // Reopening the segment must detect the corruption
+        let reopen_result = Segment::open_or_create(&path, FsyncPolicy::Always);
+        assert!(matches!(reopen_result, Err(BrokerError::Corruption { offset: 0, .. })));
+    }
+
+    #[test]
+    fn test_segment_recovery_preserves_records() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("recoverable.log");
+        {
+            let mut seg = Segment::open_or_create(&path, FsyncPolicy::Always).unwrap();
+            seg.append(b"first").unwrap();
+            seg.append(b"second").unwrap();
+            seg.append(b"third").unwrap();
+        }
+        // Reopen segment — should recover all 3 records
+        let mut recovered = Segment::open_or_create(&path, FsyncPolicy::Always).unwrap();
+        assert_eq!(recovered.record_count(), 3);
+        assert_eq!(recovered.read(0).unwrap().payload, b"first");
+        assert_eq!(recovered.read(1).unwrap().payload, b"second");
+        assert_eq!(recovered.read(2).unwrap().payload, b"third");
     }
 
     #[test]
@@ -343,7 +415,6 @@ mod tests {
     #[test]
     fn test_batch_fsync_policy() {
         let (mut seg, _dir) = temp_segment(FsyncPolicy::Batch(10));
-        // Append 10 records — should trigger fsync at batch boundary
         for _ in 0..10 {
             seg.append(b"batch-record").unwrap();
         }
@@ -357,6 +428,9 @@ mod tests {
         let off = log.publish(b"first message").unwrap();
         let rec = log.consume(off).unwrap();
         assert_eq!(rec.payload, b"first message");
+        assert_eq!(log.record_count(), 1);
+        assert_eq!(log.dir(), dir.path());
+        assert_eq!(log.policy(), FsyncPolicy::Always);
     }
 
     #[test]
