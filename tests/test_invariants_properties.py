@@ -11,8 +11,7 @@ async def test_invariant_monotonic_offsets_mixed_produce():
     topic = Topic("inv-monotonic", partitions_count=1)
     await topic.startup()
     p = topic.get_partition(0)
-    
-    # Mix single and batch writes
+
     res1 = await p.append("k1", "v1", None)
     res2 = await p.append_batch([
         {"key": "k2", "value": "v2", "headers": None},
@@ -22,7 +21,7 @@ async def test_invariant_monotonic_offsets_mixed_produce():
     res4 = await p.append_batch([
         {"key": "k5", "value": "v5", "headers": None}
     ])
-    
+
     assigned = [res1["offset"]] + [r["offset"] for r in res2] + [res3["offset"]] + [r["offset"] for r in res4]
     assert assigned == [0, 1, 2, 3, 4]
     assert p.get_high_watermark() == 5
@@ -34,7 +33,7 @@ def test_invariant_round_robin_assignor_fairness():
             partitions = list(range(num_p))
             consumers = [f"c{i}" for i in range(num_c)]
             assignment = assign_round_robin(partitions, consumers)
-            
+
             counts = [len(parts) for parts in assignment.values()]
             assert max(counts) - min(counts) <= 1
             # Union of all partitions equals original set
@@ -47,7 +46,7 @@ def test_invariant_range_assignor_contiguous_coverage():
             partitions = list(range(num_p))
             consumers = [f"c{i}" for i in range(num_c)]
             assignment = assign_range(partitions, consumers)
-            
+
             all_assigned = []
             for c_id, parts in assignment.items():
                 if parts:
@@ -62,12 +61,12 @@ async def test_invariant_sparse_index_monotonicity():
     with tempfile.TemporaryDirectory() as tmpdir:
         seg_path = os.path.join(tmpdir, "00000000000000000000.log")
         seg = Segment(seg_path, base_offset=0)
-        
+
         # Write 50 messages with small interval so index is populated
         seg.index.interval = 5
         messages = [{"key": f"k{i}", "value": f"v{i}", "headers": None} for i in range(50)]
         await seg.append_batch(messages)
-        
+
         entries = seg.index._entries
         assert len(entries) >= 5
         for i in range(len(entries) - 1):
@@ -79,12 +78,12 @@ async def test_invariant_empty_message_roundtrip():
     topic = Topic("inv-empty-topic", partitions_count=1)
     await topic.startup()
     p = topic.get_partition(0)
-    
+
     # Append empty/None values (0-byte payloads decode to None)
     await p.append(key="", value="", headers={})
     await p.append(key=None, value=None, headers=None)
     await p.append(key="k", value={"item": "box"}, headers={"flag": True})
-    
+
     records = await p.read(offset=0, max_count=10)
     assert len(records) == 3
     assert records[0]["key"] is None
@@ -101,13 +100,13 @@ async def test_invariant_multi_topic_data_isolation():
     topic_b = Topic("topic-iso-B", partitions_count=1)
     await topic_a.startup()
     await topic_b.startup()
-    
+
     await topic_a.get_partition(0).append("keyA", "valA", None)
     await topic_b.get_partition(0).append("keyB", "valB", None)
-    
+
     records_a = await topic_a.get_partition(0).read(0, 10)
     records_b = await topic_b.get_partition(0).read(0, 10)
-    
+
     assert len(records_a) == 1
     assert records_a[0]["value"] == "valA"
     assert len(records_b) == 1
@@ -118,12 +117,12 @@ async def test_invariant_large_batch_integrity():
     topic = Topic("inv-large-batch", partitions_count=1)
     await topic.startup()
     p = topic.get_partition(0)
-    
+
     count = 200
     batch = [{"key": f"k-{i}", "value": {"seq": i, "data": "x" * 50}, "headers": {"h": i}} for i in range(count)]
     results = await p.append_batch(batch)
     assert len(results) == count
-    
+
     # Read back all
     read_records = await p.read(0, max_count=count)
     assert len(read_records) == count
@@ -138,13 +137,13 @@ async def test_invariant_offset_reset_extremes():
     await init_db()
     topic = Topic("inv-reset-topic", partitions_count=2)
     await topic.startup()
-    
+
     # Produce 10 to p0, 20 to p1
     for i in range(10):
         await topic.get_partition(0).append("k", i, None)
     for i in range(20):
         await topic.get_partition(1).append("k", i, None)
-        
+
     group = "reset-inv-group"
     # Commit initial offsets
     await commit_offsets_batch(group, "inv-reset-topic", {0: 5, 1: 15})

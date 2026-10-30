@@ -7,7 +7,6 @@ import asyncio
 from contextlib import asynccontextmanager
 from httpx import AsyncClient, ASGITransport
 
-# Create temporary directory for isolated test execution
 temp_data_dir = tempfile.mkdtemp()
 
 # Modify config before modules import it

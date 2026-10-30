@@ -47,23 +47,21 @@ def _build_topic_info(topic_obj: Topic) -> TopicInfo:
 async def create_topic(request: Request, payload: TopicCreate):
     topics = request.app.state.topics
     topic_name = payload.name
-    
+
     if not is_safe_topic_name(topic_name):
         raise HTTPException(status_code=400, detail="Invalid or unsafe topic name")
-        
+
     if topic_name in topics:
         raise HTTPException(status_code=400, detail="Topic already exists")
-    
-    # Save metadata
+
     await save_topic_metadata(topic_name, payload.partitions)
-    
-    # Instantiate Topic and start it up
+
     topic_obj = Topic(topic_name, payload.partitions)
     await topic_obj.startup()
-    
+
     # Register in application state
     topics[topic_name] = topic_obj
-    
+
     return _build_topic_info(topic_obj)
 
 @router.get("/topics", response_model=List[TopicInfo])
@@ -83,13 +81,13 @@ async def expand_partitions(request: Request, topic: str, payload: TopicExpand):
     topics = request.app.state.topics
     if topic not in topics:
         raise HTTPException(status_code=404, detail="Topic not found")
-        
+
     topic_obj = topics[topic]
     try:
         await topic_obj.add_partitions(payload.partitions)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-        
+
     return _build_topic_info(topic_obj)
 
 @router.delete("/topics/{topic}")
@@ -97,7 +95,7 @@ async def delete_topic(request: Request, topic: str):
     topics = request.app.state.topics
     if topic not in topics:
         raise HTTPException(status_code=404, detail="Topic not found")
-    
+
     topic_obj = topics.pop(topic)
     await delete_topic_storage(topic_obj.name)
     return {"status": "deleted"}
@@ -112,7 +110,7 @@ async def trigger_topic_cleanup(
     topics = request.app.state.topics
     if topic not in topics:
         raise HTTPException(status_code=404, detail="Topic not found")
-        
+
     topic_obj = topics[topic]
     cleaned = await topic_obj.cleanup(retention_hours=retention_hours, max_bytes=max_bytes)
     metrics.record_dropped(cleaned)

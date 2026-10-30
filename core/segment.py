@@ -15,7 +15,6 @@ HEADER_SIZE = 32
 
 def _encode_message(key: Any, value: Any, headers: Optional[Dict[str, Any]], timestamp: int, offset: int) -> tuple[bytes, dict]:
     """Encode a message record into binary format [crc(4)|key_len(4)|val_len(4)|hdrs_len(4)|timestamp(8)|offset(8)|payload]."""
-    # Key
     if isinstance(key, str):
         key_bytes = key.encode('utf-8')
         key_str = key
@@ -32,7 +31,6 @@ def _encode_message(key: Any, value: Any, headers: Optional[Dict[str, Any]], tim
         key_bytes = b""
         key_str = None
 
-    # Value
     if isinstance(value, bytes):
         val_bytes = value
     elif isinstance(value, str):
@@ -42,7 +40,6 @@ def _encode_message(key: Any, value: Any, headers: Optional[Dict[str, Any]], tim
     else:
         val_bytes = b""
 
-    # Headers
     headers_dict = headers if isinstance(headers, dict) else {}
     hdrs_bytes = json.dumps(headers_dict).encode('utf-8') if headers_dict else b"{}"
 
@@ -67,7 +64,7 @@ def _encode_message(key: Any, value: Any, headers: Optional[Dict[str, Any]], tim
 
 class Segment:
     """Represents an individual append-only log segment file with binary record serialization."""
-    
+
     def __init__(self, path: str, base_offset: int, max_size: int = 1_048_576):
         self.path = path
         self.base_offset = base_offset
@@ -94,29 +91,29 @@ class Segment:
                     header_bytes = await f.read(HEADER_SIZE)
                     if len(header_bytes) < HEADER_SIZE:
                         break
-                    
+
                     try:
                         crc, key_len, val_len, hdrs_len, timestamp, offset = struct.unpack(
                             HEADER_FORMAT, header_bytes
                         )
                     except struct.error:
                         break
-                    
+
                     payload_size = key_len + val_len + hdrs_len
                     if payload_size >= self.max_size or position + HEADER_SIZE + payload_size > file_size:
                         break
-                    
+
                     payload_bytes = await f.read(payload_size)
                     if len(payload_bytes) < payload_size:
                         break
-                    
+
                     actual_crc = zlib.crc32(payload_bytes) & 0xffffffff
                     if actual_crc != crc:
                         break
-                    
+
                     if offset % self.index.interval == 0:
                         self.index.add(offset, position)
-                    
+
                     last_offset = offset
                     last_valid_position = position + HEADER_SIZE + payload_size
                     position = last_valid_position
@@ -151,7 +148,7 @@ class Segment:
 
         offset = self.next_offset
         record_bytes, record_meta = _encode_message(key, value, headers, timestamp, offset)
-        
+
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         position = self.get_size()
 
@@ -182,7 +179,7 @@ class Segment:
 
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         current_pos = self.get_size()
-        
+
         all_bytes = bytearray()
         results = []
         new_index_entries = []
@@ -195,7 +192,7 @@ class Segment:
             hdrs = msg.get("headers")
 
             record_bytes, record_meta = _encode_message(key, val, hdrs, ts, offset)
-            
+
             if offset % self.index.interval == 0:
                 new_index_entries.append((offset, current_pos + len(all_bytes)))
 
@@ -231,7 +228,7 @@ class Segment:
         """Read up to `count` messages starting from `start_offset` using sparse index and filtering."""
         if count < 0:
             raise ValueError("Limit cannot be negative")
-            
+
         records = []
         if not os.path.exists(self.path) or count == 0:
             return records
@@ -247,38 +244,38 @@ class Segment:
                     header_bytes = await f.read(HEADER_SIZE)
                     if len(header_bytes) < HEADER_SIZE:
                         break
-                    
+
                     try:
                         crc, key_len, val_len, hdrs_len, timestamp, offset = struct.unpack(
                             HEADER_FORMAT, header_bytes
                         )
                     except struct.error as e:
                         raise ValueError("Corrupt record header: truncated or invalid format") from e
-                    
+
                     payload_size = key_len + val_len + hdrs_len
                     if payload_size > self.max_size:
                         raise ValueError("Payload size exceeds segment max size limit")
-                        
+
                     payload_bytes = await f.read(payload_size)
                     if len(payload_bytes) < payload_size:
                         raise ValueError("Corrupt record: truncated payload")
-                    
+
                     actual_crc = zlib.crc32(payload_bytes) & 0xffffffff
                     if actual_crc != crc:
                         raise ValueError(f"CRC mismatch: record is corrupt. Expected {crc}, got {actual_crc}")
-                    
+
                     position += HEADER_SIZE + payload_size
 
                     if offset >= start_offset:
                         key = payload_bytes[:key_len]
                         val_bytes = payload_bytes[key_len:key_len + val_len]
                         hdrs_bytes = payload_bytes[key_len + val_len:]
-                        
+
                         try:
                             key_str = key.decode('utf-8') if key_len > 0 else None
                         except UnicodeDecodeError:
                             key_str = key.hex() if key_len > 0 else None
-                        
+
                         value = None
                         if val_len > 0:
                             try:
@@ -289,7 +286,7 @@ class Segment:
                                     value = val_str
                             except UnicodeDecodeError:
                                 value = val_bytes.hex()
-                        
+
                         headers = {}
                         if hdrs_len > 0:
                             try:
@@ -310,7 +307,7 @@ class Segment:
                             records.append(record_dict)
         except FileNotFoundError:
             return records
-            
+
         return records
 
     async def read_all(self):
@@ -326,37 +323,37 @@ class Segment:
                     header_bytes = await f.read(HEADER_SIZE)
                     if len(header_bytes) < HEADER_SIZE:
                         break
-                    
+
                     try:
                         crc, key_len, val_len, hdrs_len, timestamp, offset = struct.unpack(
                             HEADER_FORMAT, header_bytes
                         )
                     except struct.error as e:
                         raise ValueError("Corrupt record: truncated header") from e
-                    
+
                     payload_size = key_len + val_len + hdrs_len
                     if payload_size > self.max_size:
                         raise ValueError("Payload size exceeds segment max size limit")
-                        
+
                     payload_bytes = await f.read(payload_size)
                     if len(payload_bytes) < payload_size:
                         raise ValueError("Corrupt record: truncated payload")
-                    
+
                     actual_crc = zlib.crc32(payload_bytes) & 0xffffffff
                     if actual_crc != crc:
                         raise ValueError(f"CRC mismatch: record is corrupt. Expected {crc}, got {actual_crc}")
-                    
+
                     position += HEADER_SIZE + payload_size
 
                     key = payload_bytes[:key_len]
                     val_bytes = payload_bytes[key_len:key_len + val_len]
                     hdrs_bytes = payload_bytes[key_len + val_len:]
-                    
+
                     try:
                         key_str = key.decode('utf-8') if key_len > 0 else None
                     except UnicodeDecodeError:
                         key_str = key.hex() if key_len > 0 else None
-                    
+
                     value = None
                     if val_len > 0:
                         try:
@@ -367,7 +364,7 @@ class Segment:
                                 value = val_str
                         except UnicodeDecodeError:
                             value = val_bytes.hex()
-                    
+
                     headers = {}
                     if hdrs_len > 0:
                         try:

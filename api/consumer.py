@@ -53,7 +53,7 @@ async def consume_messages(
     topics = request.app.state.topics
     if topic not in topics:
         raise HTTPException(status_code=404, detail="Topic not found")
-        
+
     topic_obj = topics[topic]
     partition_obj = topic_obj.get_partition(partition)
     if not partition_obj:
@@ -68,11 +68,10 @@ async def consume_messages(
         except Exception:
             raise HTTPException(status_code=400, detail="header_filter must be a valid JSON object")
 
-    # Determine starting offset
     current_offset = None
     if group:
         current_offset = await get_offset(group, topic, partition)
-        
+
     if current_offset is None:
         current_offset = offset if offset is not None else 0
 
@@ -84,7 +83,7 @@ async def consume_messages(
         header_filter=parsed_header_filter,
         drop_expired=drop_expired
     )
-    
+
     records = [
         MessageRecord(
             offset=msg["offset"],
@@ -94,19 +93,19 @@ async def consume_messages(
             headers=msg.get("headers")
         ) for msg in messages
     ]
-    
+
     if messages:
         next_offset = messages[-1]["offset"] + 1
     else:
         next_offset = current_offset
-        
+
     # Auto-commit if group is provided, messages read, and auto_commit enabled
     if group and messages and auto_commit:
         await commit_offset(group, topic, partition, next_offset)
-        
+
     high_watermark = partition_obj.get_high_watermark()
     has_more = next_offset < high_watermark
-    
+
     metrics.record_consumed(topic, count=len(records))
 
     return MessageConsumeResponse(
@@ -122,12 +121,11 @@ async def register_consumer(request: Request, topic: str, payload: ConsumerRegis
     topics = request.app.state.topics
     if topic not in topics:
         raise HTTPException(status_code=404, detail="Topic not found")
-        
+
     topic_obj = topics[topic]
     total_partitions = len(topic_obj.partitions)
     coordinator = request.app.state.coordinator
-    
-    # Initialize group offsets for all partitions if not already set
+
     for p_id, p in topic_obj.partitions.items():
         existing = await get_offset(payload.group, topic, p_id)
         if existing is None:
@@ -153,7 +151,7 @@ async def register_consumer(request: Request, topic: str, payload: ConsumerRegis
             total_partitions=total_partitions,
             strategy=payload.strategy or "range"
         )
-        
+
     return ConsumerRegisterResponse(
         status="registered",
         group=payload.group,
@@ -176,7 +174,7 @@ async def consumer_leave(request: Request, topic: str, payload: ConsumerLeaveReq
     topic_obj = topics.get(topic)
     total_parts = len(topic_obj.partitions) if topic_obj else 1
     coordinator = request.app.state.coordinator
-    
+
     success = await coordinator.leave_group(payload.group, topic, payload.consumer_id, total_parts)
     return {"status": "left" if success else "not_found"}
 
@@ -207,10 +205,10 @@ async def reset_offsets_endpoint(request: Request, topic: str, payload: OffsetRe
     topics = request.app.state.topics
     if topic not in topics:
         raise HTTPException(status_code=404, detail="Topic not found")
-        
+
     topic_obj = topics[topic]
     partitions_to_reset = [payload.partition] if payload.partition is not None else list(topic_obj.partitions.keys())
-    
+
     for p_id in partitions_to_reset:
         p = topic_obj.get_partition(p_id)
         if not p:
@@ -226,9 +224,9 @@ async def reset_offsets_endpoint(request: Request, topic: str, payload: OffsetRe
                     raise HTTPException(status_code=400, detail="Offset must be non-negative")
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid offset specification")
-                
+
         await commit_offset(payload.group, topic, p_id, val)
-        
+
     return {"status": "reset", "group": payload.group, "topic": topic, "partitions": partitions_to_reset}
 
 @router.get("/groups", response_model=List[ConsumerGroupInfo])
@@ -236,29 +234,29 @@ async def get_consumer_groups(request: Request):
     topics = request.app.state.topics
     all_db_offsets = await get_all_offsets()
     coordinator = request.app.state.coordinator
-    
+
     group_topics = {}
     for row in all_db_offsets:
         group = row["group_name"]
         t = row["topic"]
         partition = row["partition_id"]
         off = row["offset"]
-        
+
         key = (group, t)
         if key not in group_topics:
             group_topics[key] = {}
         group_topics[key][partition] = off
-        
+
     result = []
     for (group, t), partition_offsets in group_topics.items():
         if t not in topics:
             continue
-            
+
         topic_obj = topics[t]
         total_current = 0
         total_latest = 0
         part_details = []
-        
+
         for p_id, p in topic_obj.partitions.items():
             current = partition_offsets.get(p_id, 0)
             latest = p.get_high_watermark()
@@ -273,9 +271,9 @@ async def get_consumer_groups(request: Request):
                     lag=part_lag
                 )
             )
-            
+
         lag = max(0, total_latest - total_current)
-        
+
         members_dicts = []
         assignment_map = await coordinator.get_assignments(group, t)
         for c_id, parts in assignment_map.items():
@@ -294,7 +292,7 @@ async def get_consumer_groups(request: Request):
                 members=members_dicts
             )
         )
-        
+
     return result
 
 @router.delete("/groups/{group}")

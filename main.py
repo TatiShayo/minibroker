@@ -37,29 +37,25 @@ async def _consumer_reaper_task(app: FastAPI):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize SQLite database
     await init_db()
-    
-    # Initialize topics and coordinator state
+
     app.state.topics = {}
     app.state.coordinator = ConsumerGroupCoordinator()
-    
-    # Load topic metadata from disk
+
     topics_metadata = await load_all_topics()
-    
-    # Instantiate Topic objects
+
     for name, partitions_count in topics_metadata.items():
         app.state.topics[name] = Topic(name, partitions_count)
-        
+
     # Start up all topics in parallel
     if app.state.topics:
         await asyncio.gather(*(topic.startup() for topic in app.state.topics.values()))
-        
+
     # Launch background consumer heartbeat reaper
     reaper_handle = asyncio.create_task(_consumer_reaper_task(app))
-    
+
     yield
-    
+
     # Clean shutdown
     reaper_handle.cancel()
     try:

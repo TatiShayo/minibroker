@@ -7,7 +7,7 @@ from config import SEGMENT_MAX_SIZE, RETENTION_HOURS, RETENTION_MAX_BYTES
 
 class Log:
     """Manages ordered sequence of segment files for an individual partition log."""
-    
+
     def __init__(self, topic: str, partition: int, base_dir: str):
         self.topic = topic
         self.partition = partition
@@ -19,7 +19,7 @@ class Log:
     async def rebuild_index(self):
         """Scan partition directory to discover and recover all segment files."""
         os.makedirs(self.base_dir, exist_ok=True)
-        
+
         log_files = []
         for filename in os.listdir(self.base_dir):
             if filename.endswith(".log"):
@@ -39,7 +39,6 @@ class Log:
             await seg.recover()
             self.segments.append(seg)
 
-        # Create initial segment if none exist
         if not self.segments:
             initial_path = os.path.join(self.base_dir, f"{0:020d}.log")
             seg = Segment(initial_path, 0, max_size=SEGMENT_MAX_SIZE)
@@ -53,12 +52,12 @@ class Log:
         if self.active_segment and self.active_segment.get_size() >= SEGMENT_MAX_SIZE:
             new_base_offset = self.active_segment.next_offset
             new_path = os.path.join(self.base_dir, f"{new_base_offset:020d}.log")
-            
+
             await self.active_segment.close()
-            
+
             new_seg = Segment(new_path, new_base_offset, max_size=SEGMENT_MAX_SIZE)
             await new_seg.recover()
-            
+
             self.segments.append(new_seg)
             self.active_segment = new_seg
 
@@ -72,26 +71,26 @@ class Log:
         """High-throughput batch append across segments."""
         if not messages:
             return []
-            
+
         async with self._lock:
             results = []
             current_idx = 0
-            
+
             while current_idx < len(messages):
                 await self._roll_segment_if_needed()
-                
+
                 # Check how much capacity remains in active segment
                 active_size = self.active_segment.get_size()
                 if active_size >= SEGMENT_MAX_SIZE:
                     continue
-                    
+
                 # Estimate remaining batch capacity or append all if fits
                 # If active segment is fresh (empty), write at least 1 message or chunk
                 chunk = messages[current_idx:]
                 chunk_results = await self.active_segment.append_batch(chunk)
                 results.extend(chunk_results)
                 current_idx += len(chunk_results)
-                
+
             return results
 
     async def read(
@@ -104,7 +103,7 @@ class Log:
     ) -> list:
         """Read records sequentially across segments starting from the specified offset."""
         records = []
-        
+
         # Locate starting segment
         seg_idx = 0
         for i, seg in enumerate(self.segments):
@@ -117,7 +116,7 @@ class Log:
         while len(records) < max_count and seg_idx < len(self.segments):
             seg = self.segments[seg_idx]
             needed = max_count - len(records)
-            
+
             seg_records = await seg.read(
                 current_offset,
                 needed,
@@ -126,7 +125,7 @@ class Log:
                 drop_expired=drop_expired
             )
             records.extend(seg_records)
-            
+
             if seg_records:
                 current_offset = seg_records[-1]["offset"] + 1
             else:
@@ -134,7 +133,7 @@ class Log:
                     current_offset = max(current_offset, self.segments[seg_idx + 1].base_offset)
                 else:
                     break
-            
+
             seg_idx += 1
 
         return records
@@ -170,7 +169,6 @@ class Log:
             surviving_segments = []
             deleted_count = 0
 
-            # 1. Time-based cleanup
             for seg in self.segments:
                 if seg == self.active_segment:
                     surviving_segments.append(seg)
@@ -189,16 +187,15 @@ class Log:
 
                 surviving_segments.append(seg)
 
-            # 2. Size-based cleanup (if total size still exceeds max_bytes)
             total_size = sum(seg.get_size() for seg in surviving_segments)
             final_segments = []
-            
+
             # Oldest to newest
             for seg in surviving_segments:
                 if seg == self.active_segment:
                     final_segments.append(seg)
                     continue
-                    
+
                 seg_size = seg.get_size()
                 if total_size > max_bytes:
                     if os.path.exists(seg.path):

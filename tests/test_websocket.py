@@ -18,10 +18,9 @@ def test_websocket_nonexistent_topic():
 
 def test_websocket_realtime_streaming():
     with TestClient(app) as client:
-        # Create topic first via REST
         resp = client.post("/topics", json={"name": "ws-live-topic", "partitions": 1})
         assert resp.status_code == 200
-        
+
         # Connect WebSocket
         with client.websocket_connect("/ws/topics/ws-live-topic/subscribe?partition=0") as ws:
             # Produce a message via REST
@@ -30,13 +29,13 @@ def test_websocket_realtime_streaming():
                 "value": {"event": "user_signup", "id": 42}
             })
             assert prod_resp.status_code == 200
-            
+
             # Receive streamed message over WebSocket
             received = ws.receive_json()
             assert received.get("event") in ("message", "ping")
             if received.get("event") == "ping":
                 received = ws.receive_json()
-                
+
             assert received["event"] == "message"
             assert received["topic"] == "ws-live-topic"
             msg = received["message"]
@@ -47,12 +46,12 @@ def test_websocket_historical_replay():
     with TestClient(app) as client:
         topic = "ws-replay-topic"
         client.post("/topics", json={"name": topic, "partitions": 1})
-        
+
         # Pre-populate 3 messages
         client.post(f"/topics/{topic}/messages", json={"value": "msg-0"})
         client.post(f"/topics/{topic}/messages", json={"value": "msg-1"})
         client.post(f"/topics/{topic}/messages", json={"value": "msg-2"})
-        
+
         # Connect with from_offset=1
         with client.websocket_connect(f"/ws/topics/{topic}/subscribe?partition=0&from_offset=1") as ws:
             # First replayed message should be offset 1
@@ -60,7 +59,7 @@ def test_websocket_historical_replay():
             assert msg1["event"] == "message"
             assert msg1["message"]["offset"] == 1
             assert msg1["message"]["value"] == "msg-1"
-            
+
             # Second replayed message should be offset 2
             msg2 = ws.receive_json()
             assert msg2["event"] == "message"

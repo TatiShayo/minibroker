@@ -6,7 +6,7 @@ from typing import List, Tuple, Union
 
 class OffsetIndex:
     """In-memory sparse offset index mapping message offsets to segment file byte positions."""
-    
+
     def __init__(self, interval: int = 1000):
         self.interval = max(1, interval)
         self._entries: List[Tuple[int, int]] = []  # List of (offset, position)
@@ -21,7 +21,6 @@ class OffsetIndex:
         elif self._entries[-1][0] == offset:
             self._entries[-1] = (offset, position)
         else:
-            # Maintain strict sort order if added out-of-order
             idx = bisect.bisect_left(self._entries, (offset, 0))
             if idx < len(self._entries) and self._entries[idx][0] == offset:
                 self._entries[idx] = (offset, position)
@@ -35,7 +34,7 @@ class OffsetIndex:
         """
         if not self._entries:
             return 0
-        
+
         # bisect_right finds insertion point for (offset, infinity)
         idx = bisect.bisect_right(self._entries, (offset, float('inf')))
         if idx == 0:
@@ -70,21 +69,21 @@ class OffsetIndex:
                         header_bytes = await f.read(HEADER_SIZE)
                         if len(header_bytes) < HEADER_SIZE:
                             break
-                        
+
                         try:
                             crc, key_len, val_len, hdrs_len, timestamp, offset = struct.unpack(
                                 HEADER_FORMAT, header_bytes
                             )
                         except struct.error:
                             break
-                        
+
                         payload_size = key_len + val_len + hdrs_len
                         if position + HEADER_SIZE + payload_size > file_size:
                             break
-                        
+
                         if offset % self.interval == 0:
                             self.add(offset, position)
-                        
+
                         position += HEADER_SIZE + payload_size
             except Exception:
                 continue

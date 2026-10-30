@@ -14,16 +14,15 @@ async def websocket_topic_subscribe(
 ):
     await websocket.accept()
     topics = websocket.app.state.topics
-    
+
     if topic not in topics:
         await websocket.send_json({"error": f"Topic '{topic}' not found"})
         await websocket.close(code=1008)
         return
-        
+
     topic_obj = topics[topic]
     partitions_to_watch = [partition] if partition is not None else list(topic_obj.partitions.keys())
-    
-    # Validate partitions exist
+
     for p_id in partitions_to_watch:
         if p_id not in topic_obj.partitions:
             await websocket.send_json({"error": f"Partition {p_id} does not exist"})
@@ -32,7 +31,6 @@ async def websocket_topic_subscribe(
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
 
-    # 1. Historical replay if from_offset provided
     if from_offset is not None:
         for p_id in partitions_to_watch:
             p_obj = topic_obj.partitions[p_id]
@@ -45,7 +43,6 @@ async def websocket_topic_subscribe(
                     "message": rec
                 })
 
-    # 2. Subscribe queue to live partitions
     for p_id in partitions_to_watch:
         topic_obj.partitions[p_id].subscribe(queue)
 

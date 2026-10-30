@@ -29,8 +29,7 @@ async def route_to_dlq(
     from storage.persistence import save_topic_metadata
 
     dlq_topic_name = get_dlq_topic_name(original_topic)
-    
-    # Ensure DLQ topic exists
+
     if dlq_topic_name not in topics:
         await save_topic_metadata(dlq_topic_name, 1)
         dlq_topic = Topic(dlq_topic_name, 1)
@@ -110,7 +109,7 @@ async def redrive_dlq_messages(
         # Clear DLQ death headers for redrive
         clean_hdrs = {k: v for k, v in hdrs.items() if not k.startswith("x-death-")}
         clean_hdrs["x-redriven"] = True
-        
+
         target_part_id = target_topic.partition(rec.get("key"))
         target_part = target_topic.get_partition(target_part_id)
         if target_part:
